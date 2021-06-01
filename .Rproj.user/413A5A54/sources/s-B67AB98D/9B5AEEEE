@@ -1,0 +1,25 @@
+{
+    "id": "9B5AEEEE",
+    "path": "~/R/bike/run.R",
+    "project_path": "run.R",
+    "type": "r_source",
+    "hash": "0",
+    "contents": "",
+    "dirty": false,
+    "created": 1622128110653.0,
+    "source_on_save": false,
+    "relative_order": 2,
+    "properties": {
+        "tempName": "Untitled1",
+        "cursorPosition": "31,10",
+        "scrollLine": "28"
+    },
+    "folds": "",
+    "lastKnownWriteTime": 1622530297,
+    "encoding": "UTF-8",
+    "collab_server": "",
+    "source_window": "",
+    "last_content_update": 1622530297,
+    "read_only": false,
+    "read_only_alternatives": []
+}

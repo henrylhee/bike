@@ -1,0 +1,330 @@
+# creates a report using an Rnw file
+setwd("~/R/")
+dir <- "~/R/datadrivenproject/reports/rawDataReport"
+
+library(knitr)
+library(doParallel)
+library(dplyr)
+library(checkmate)
+library(gridExtra)
+library(xtable)
+library(reshape2)
+library(data.table)
+library(ggplot2)
+library(cowplot)
+library(h2o)
+library(randomForest)
+library(raster)
+library(stringdist)
+library(parallelMap)
+library(parallel)
+library(randomForest)
+library(missForest)
+library(ClusterR)
+
+#parallelStartSocket(cpus = detectCores())
+registerDoParallel(cores=8)
+
+source("utility/count.R")
+source("datadrivenproject/data/analysis/prepareData.R")
+source("datadrivenproject/data/analysis/geoTransform.R")
+source("datadrivenproject/data/analysis/geoCluster.R")
+source("datadrivenproject/data/analysis/geoVector.R")
+source("datadrivenproject/data/analysis/extractPattern.R")
+source("datadrivenproject/data/analysis/prepStrings.R")
+source("datadrivenproject/data/analysis/get.R")
+
+#----------------------------
+# main code
+#----------------------------
+
+#set parameter
+pdfName <- "analysis_raw_data"
+
+#get data
+rawTestData <- read.csv2("datadrivenproject/data/rawData/trainingSetValues.csv", sep=",")
+predictData <- read.csv2("datadrivenproject/data/rawData/testSetValues.csv", sep=",")
+
+class <- read.csv2("datadrivenproject/data/rawData/trainingSetLabels.csv", sep=",")
+dataOrig <- merge(rawTestData,class,by="id")
+
+l <- names(rawTestData)
+description <- c("id", "Total static head (amount water available to waterpoint)", "The date the row was entered", "Who funded the well", "Altitude of the well", "Organization that installed the well", "GPS coordinate", "GPS coordinate", "Name of the waterpoint if there is one", "", "Geographic water basin", "Geographic location", "Geographic location", "Geographic location(coded)", "Geographic location(coded)", "Geographic location", "Geographic location", "Population around the well", "True/False", "Group entering this row of data", "Who operates the waterpoint", "Who operates the waterpoint", "If the waterpoint is permitted", "Year the waterpoint was constructed", "The kind of extraction the waterpoint uses", "The kind of extraction the waterpoint uses", "The kind of extraction the waterpoint uses", "How the waterpoint is managed", "How the waterpoint is managed", "What the water costs", "What the water costs", "The quality of the water", "The quality of the water", "The quantity of water", "The quantity of water", "The source of the water", "The source of the water", "The source of the water", "The kind of waterpoint", "The kind of waterpoint")
+for(i in 1:40){
+  cat(paste0("\n row: ", i))
+  cat(paste0("  name: ", names(rawTestData)[i]))
+  cat(paste0("  description: ", description[i]))
+  cat(paste0("  length: ", nrow(rawTestData[i])))
+  cat(paste0("  unique values: ", nrow(unique(rawTestData[i]))))
+}
+#-----
+
+predictData$status_group <- "no"
+predictData$realid <- 1:14850
+dataOrig$realid <- 15000
+
+allData <- rbind(dataOrig, predictData)
+allData <- prepStrings(allData)
+
+allData <- clusterGeo(allData)
+
+dataModelOrig <- prepareTraining(allData[allData$realid == 15000,])
+dataModelOrig$realid <- NULL
+dataModel <- dataModelOrig
+
+dataPredictOrig <- prepareTest(allData[allData$status_group=="no",])
+dataPredictOrig$status_group <- NULL
+dataPredict <- dataPredictOrig
+
+#-----------------------------------------------------
+
+#------------------------------------------------------
+
+#test: !!!!! elbow method,different center numbers, status group density zum clustern nutzen?
+
+#geoModel <- kmeans(x = na.omit(dataModel[,c("longitude","latitude")]), centers=40)
+
+# <- kmeans(x = na.omit(dataPredict[,c("longitude","latitude")]), centers=geoModel$centers)
+
+
+#for(i in 1:40){
+#print(nrow(dataModel[dataModel$clusterGeo==i & dataModel$status_group=="functional",])/nrow(dataModel[dataModel$clusterGeo==i,]))
+#}
+
+dataModel$longitude <- round(dataModel$longitude,digits=2)
+dataModel$latitude <- round(dataModel$latitude,digits=2)
+#
+dataPredict$longitude <- round(dataPredict$longitude,digits=2)
+dataPredict$latitude <- round(dataPredict$latitude,digits=2)
+
+
+
+###---train model---
+
+#prerequisites:
+
+
+dataModel$id <- NULL
+dataModel$longitude <- NULL
+dataModel$latitude <- NULL
+
+dataPredict <- dataPredict[order(dataPredict$realid),]
+dataPredict$realid <- NULL
+dataPredict$longitude <- NULL
+dataPredict$latitude <- NULL
+
+
+h2o.init()
+
+numb <- sample(seq_len(nrow(dataModel)),floor(0.8*nrow(dataModel)))
+
+t <- dataModel[numb,]
+v <- dataModel[-numb,]
+
+
+h2o.removeAll()
+
+model <-h2o.randomForest(x=names(dataModel)[-c(23)], y="status_group",training_frame = as.h2o(t), validation_frame = as.h2o(v),
+                         ntrees = 600, nfolds = 0, max_depth = 20, sample_rate = 0.64, mtries = 7, categorical_encoding = "SortByResponse")
+
+model <-h2o.randomForest(x=names(dataModel)[-c(25)], y="status_group",training_frame = as.h2o(dataModel),
+                           nfolds = 5,ntrees = 500, keep_cross_validation_models = FALSE, max_depth = 20)
+
+pred <- h2o.predict(model,as.h2o(dataPredict))
+
+
+#standardhyperparameter:0.8/0.2 split;training set accuracy: 0.8105; validation set accuracy: 0.828; final prediction accuracy: 0.8130
+
+#standardhyperparameter:no split; cross validation nfolds = 5; training set accuracy: 0.1841; final prediction accuracy: 0.8175
+#accuracy                 0.8115254  0.003650047  0.8113351 0.80568963  0.8155103  0.8133322  0.8117598
+#mse 0.14824937 0.0023825425   0.148507 0.15174991 0.14513794 0.14742815 0.14842391
+
+#ntrees 600; mtries 7; cat_enc. sortbyresponse;:no split; cross validation nfolds = 5; training set accuracy: 0.1851; final prediction accuracy: 0.8164
+#accuracy 0.8110655  0.004814988 0.80683905  0.8147458  0.8175681  0.8072796  0.8088948
+#mse     0.1477809  0.001970219 0.15062119 0.14714983 0.14529993 0.14857608 0.14725743
+
+#ntrees 500; mtries 6: no split; cross validation nfolds = 5; training set accuracy: 0.1853; final prediction accuracy: 0.8171
+#accuracy 0.8118494 0.0039382954  0.8135976 0.81349576  0.8048324  0.8141475 0.81317395
+#mse     0.14800511 0.0020892462 0.14847367  0.1461659   0.151414 0.14670336  0.1472686
+
+#ntrees 600; mtries 6: no split; cross validation nfolds = 5; training set accuracy: 0.1861; final prediction accuracy: 0.8162
+#accuracy 0.8123507  0.002496938 0.80875826 0.81486756 0.81182885  0.8145899 0.81170875
+#mse     0.14806932 0.0012539999 0.14967635 0.14677817 0.14781013  0.1470481 0.14903389
+
+
+#---
+500
+val error: 0.1902 trainerror: 0.1862
+accuracy                 0.891??? 0.0033456748 0.81425124  0.8061075   0.807782 0.81014127  0.8065398
+
+500; max_depth = 18
+val error: 0.1889 trainerror: 0.1875
+accuracy                 0.80823356 0.0049099866  0.8122423 0.81379455 0.80255514  0.8040945  0.8084812
+
+#grid search-------------------------------------------------------------------------
+
+ntrees_opts <- c(450,500,550) 
+
+hyper_params = list(ntrees = ntrees_opts)
+
+search_criteria = list(strategy = "RandomDiscrete", max_runtime_secs = 1000, max_models = 100, stopping_metric = "AUTO", stopping_tolerance = 0.00001, stopping_rounds = 5, seed = 123476)
+
+
+drf.grid <- h2o.grid("drf",
+                     grid_id = "mygrid1",
+                     x = names(dataModel)[-c(25)],
+                     y = "status_group",
+                     
+                     # faster to use a 80/20 split
+                     training_frame = as.h2o(dataModel),
+                     #validation_frame = as.h2o(v),
+                     nfolds = 5,
+                     
+                     # alternatively, use N-fold cross-validation
+                     #training_frame = train,
+                     #nfolds = 5,
+                     
+                     ## stop as soon as mse doesn't improve by more than 0.1% on the validation set,
+                     ## for 2 consecutive scoring events
+                     #stopping_rounds = 2,
+                     #stopping_tolerance = 1e-3,
+                     #stopping_metric = "MSE",
+                     
+                     #score_tree_interval = 100, ## how often to score (affects early stopping)
+                     seed = 123476,  ## seed to control the sampling of the Cartesian hyper-parameter space
+                     hyper_params = hyper_params,
+                     search_criteria = search_criteria)
+
+drf.sorted.grid <- h2o.getGrid(grid_id = "mygrid1", sort_by = "mse")
+print(drf.sorted.grid)
+
+
+h2o.getModel(drf.grid@model_ids[[1]])
+
+
+samplerate 0.7
+#trees 300
+#depth 24
+#mse:0.1496
+#autoML---------------------------------------------------------------------------
+# Run AutoML for 20 base models (limited to 1 hour max runtime by default)
+autoModel <- h2o.automl(x = names(dataModel)[-c(25)], y = "status_group",
+                  training_frame = as.h2o(dataModel),
+                  max_models = 20,
+                  seed = 1)
+
+# View the AutoML Leaderboard
+lb <- autoModel@leaderboard
+
+#--------------------------------------------------------------------------------------
+colSums(is.na(dataModel))
+
+newData <- missForest(xmis=dataModel, ntree = 100, parallelize = "forests")
+rfModel <- randomForest(x=dataModel[,-c("status_group")], y=dataModel$status_group, training_frame = dataModel,
+                        ntrees = 500, max_depth = NULL)
+
+
+memory.limit()
+## To increase the storage capacity
+memory.limit(size=112000)
+ 
+
+
+
+
+
+
+
+
+
+
+submission <- data.frame(dataPredict$id, as.data.frame(pred)$predict)
+names(submission) <- c("id", "status_group")
+write.csv(submission, "datadrivenproject/submission.csv", row.names=F)
+
+
+#ergebnisse(ntrees:500; :
+#ohne long lat: 0,8087; 0,8088; 0,8094
+#mit absoluten Summen der Bl?cke:0,8040;0,8087
+# normierte Summen: 0,7358
+#long, lat with digits = 1: 0.8119
+#long, lat with digits = 2: 0.8131
+#long, lat with digits = 2 aber ohne funder,installer, ward: 0.8127
+#long, lat with digits = 2; funder,installer, ward neu prozessiert: 0.8146
+#long, lat with digits = 2; funder,installer, ward neu prozessiert == funder rausgenommen: 0.8146
+#long, lat with digits = 2; funder,installer, ward neu prozessiert == funder rausgenommen: 0.8164
+
+#long, lat with digits = 2; funder,installer, ward neu(2) prozessiert; ohne lga: 0.8160
+#long, lat with digits = 2; funder,installer, ward neu(2) prozessiert; mit lga: 0.8167
+#-->
+# neue h2o version mit oben stehenden einstellungen: 0.8175
+#ohne extraction_group:
+
+#normierte summen mit long lat digits=1: 0.7459
+#normierte summen mit long lat digits=2: 0.7199
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+###---------------------------------------------
+###trying stuff
+nrow(x[with(x, funder %in% topFunder$Var1),])
+
+
+###---------------------------------------------
+ 
+
+ggplot(x[x$status_group=="functional needs repair",],aes(date_recorded)) + 
+  geom_bar() +
+  theme(axis.text.x = element_text(angle=90,vjust=0.5))
+  
+ggplot(x[x$status_group=="functional",],aes(date_recorded)) + 
+  geom_bar() +
+  theme(axis.text.x = element_text(angle=90,vjust=0.5))
+
+ggplot(x[x$status_group=="non functional",],aes(date_recorded)) + 
+  geom_bar() +
+  theme(axis.text.x = element_text(angle=90,vjust=0.5)) 
+
+ggplot(x,aes(gps_height)) + 
+  geom_bar() + 
+  theme(axis.text.x = element_text(angle=90,vjust=0.5)) 
+
+ggplot(x[x$status_group=="functional needs repair",],aes(date_recorded)) + 
+  geom_bar() +
+  theme(axis.text.x = element_text(angle=90,vjust=0.5))+
+  scale_x_date(limits = as.Date(c("2011-01-01", "2014-01-01")))
+
+ggplot(x[x$status_group=="functional",],aes(date_recorded)) + 
+  geom_bar() +
+  theme(axis.text.x = element_text(angle=90,vjust=0.5))+
+  scale_x_date(limits = as.Date(c("2011-01-01", "2014-01-01")))
+
+ggplot(x[x$status_group=="non functional",],aes(date_recorded)) + 
+  geom_bar() +
+  theme(axis.text.x = element_text(angle=90,vjust=0.5))+
+  scale_x_date(limits = as.Date(c("2011-01-01", "2014-01-01")))
+
+
+
+
+#create pdf
+knitrDir <- file.path(dir,"output")
+#dir.create(knitrDir)
+print(paste0(Sys.time(), " ### Knit Document ###"))
+knitr::knit(paste0(dir,"/reportSchema.Rnw"),file.path(knitrDir,paste0(pdfName,".tex"))) 
+setwd(knitrDir)
+print(paste0(Sys.time(), " ### Compile Latex File ###"))
+system(paste0("pdflatex ",pdfName,".tex && pdflatex ",pdfName,".tex"))
